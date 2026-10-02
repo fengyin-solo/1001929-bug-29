@@ -6,14 +6,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.yaw import YawService
+from app.services.yaw import STATUS_ORDER, YawService
 
 router = APIRouter(prefix="/api/yaw", tags=["偏航系统"])
 
 service = YawService()
 
 LIST_FIELDS = ["系统编号", "所属机组", "偏航方式", "对风偏差", "偏航次数", "上次润滑日", "润滑油脂", "偏航状态"]
-STATUSES = ["待润滑", "运行正常", "对风偏差大", "已锁定"]
+STATUSES = list(STATUS_ORDER)
 
 
 @router.get("", response_model=PageResult[dict])
@@ -50,9 +50,14 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条偏航系统执行提交润滑、登记对风偏差、锁定偏航；不允许的动作会被拦下并说明原因。"""
+    """对单条偏航系统执行提交润滑、登记对风偏差、锁定偏航。
+
+    状态只能按 待润滑→运行正常→对风偏差大→已锁定 逐步推进；
+    跳步、锁定后的提交会被拦下并在 message 里说明卡在哪一项；
+    重复提交同一动作保持幂等，不新增记录。
+    """
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    entry, message = service.run_action(entry_id, action, payload.values)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)

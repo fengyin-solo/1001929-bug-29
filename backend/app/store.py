@@ -28,9 +28,15 @@ class Store:
         return None
 
     def overview(self) -> dict[str, object]:
+        # 偏航的 pending/abnormal 由状态机统一推导，避免汇总卡片残留锁定前的旧数字
+        from app.services.yaw import MODULE as YAW_MODULE, sync_view as yaw_sync_view
+
         modules: list[dict[str, object]] = []
         for name in self.module_names():
             rows = self.rows(name)
+            if name == YAW_MODULE:
+                for row in rows:
+                    yaw_sync_view(row)
             modules.append({
                 "name": name,
                 "created": len(rows),

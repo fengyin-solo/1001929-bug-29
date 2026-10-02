@@ -43,6 +43,8 @@
               :key="action"
               class="link"
               type="button"
+              :disabled="!isAllowed(action, row)"
+              :title="isAllowed(action, row) ? action : blockReason(action, row)"
               @click="runAction(action, row)"
             >
               {{ action }}
@@ -67,12 +69,18 @@ import { onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | boolean | null>
 
 const ENDPOINT = '/api/yaw'
 const columns = ["系统编号", "所属机组", "偏航方式", "对风偏差", "偏航次数", "上次润滑日", "润滑油脂", "偏航状态"]
 const actions = ["提交润滑", "登记对风偏差", "锁定偏航"]
-const statuses = ["待润滑", "运行正常", "对风偏差大", "已锁定"]
+// 与后端状态机同一口径：只有“当前状态对应的下一步动作”可点，跳步按钮直接置灰
+const nextActionByStatus: Record<string, string> = {
+  "待润滑": "提交润滑",
+  "运行正常": "登记对风偏差",
+  "对风偏差大": "锁定偏航",
+  "已锁定": "",
+}
 const stats = [{"label": "待润滑偏航", "value": 0}, {"label": "对风偏差台数", "value": 0}, {"label": "本月润滑数", "value": 0}]
 
 const rows = ref<Row[]>([])
@@ -80,6 +88,25 @@ const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+function currentStatus(row: Row): string {
+  return String(row.status ?? row["偏航状态"] ?? "")
+}
+
+function isAllowed(action: string, row: Row): boolean {
+  return nextActionByStatus[currentStatus(row)] === action
+}
+
+function blockReason(action: string, row: Row): string {
+  const status = currentStatus(row)
+  if (status === "已锁定") {
+    return `偏航系统已锁定，不再接受${action}`
+  }
+  const next = nextActionByStatus[status]
+  return next
+    ? `当前状态为「${status}」，请先完成「${next}」，不能直接${action}`
+    : `当前状态「${status}」不允许执行${action}`
+}
 
 function resetFilters() {
   filters.value = {}
@@ -96,13 +123,33 @@ function openCreate() {
 
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
+  if (!isAllowed(action, row)) {
+    errorMessage.value = blockReason(action, row)
+    return
+  }
+  const values: Record<string, string> = { action }
+  if (action === "登记对风偏差") {
+    const input = window.prompt('请输入本次登记的对风偏差')
+    if (input === null) return
+    const deviation = input.trim()
+    if (!deviation) {
+      errorMessage.value = '请填写对风偏差后再登记，未填写的偏差不予登记'
+      return
+    }
+    values["对风偏差"] = deviation
+  }
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values }),
     })
     if (!response.ok) {
       throw new Error('偏航系统动作未生效，请稍后重试')
+    }
+    const payload = (await response.json()) as { ok: boolean; message: string }
+    if (!payload.ok) {
+      errorMessage.value = payload.message || '该操作未通过状态校验'
+      return
     }
     await reload()
   } catch (error) {
